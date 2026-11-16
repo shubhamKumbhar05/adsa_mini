@@ -1,64 +1,64 @@
-"""Basic algorithms for choosing nodes to patch."""
+"""Algorithms for choosing the most valuable nodes to patch."""
 
 
 def risk_reduction(node):
-    """Calculate how much risk is removed by patching a node."""
+    """Return the risk reduced by patching ``node``."""
     return node["vulnerability"] * node["degree"]
 
 
 def priority_ratio(node):
-    """Calculate risk reduction divided by patch cost."""
+    """Return a node's risk reduction per unit of patching cost."""
     if node["cost"] == 0:
-        # free node with positive value has infinite priority, not zero
+        # A free node with positive risk reduction should be considered first.
         return float("inf") if risk_reduction(node) > 0 else 0
     return risk_reduction(node) / node["cost"]
 
 
 def sort_nodes(nodes):
-    """Sort nodes by priority ratio (desc), tie-break by risk reduction (desc)."""
-    sorted_nodes = []
+    """Sort by priority ratio, then use risk reduction to break ties."""
+    prioritized_nodes = []
 
     for node in nodes:
         position = 0
-        new_ratio = priority_ratio(node)          # hoisted out of the loop
-        new_risk = risk_reduction(node)
+        node_ratio = priority_ratio(node)
+        node_risk = risk_reduction(node)
 
-        while position < len(sorted_nodes):
-            old_node = sorted_nodes[position]
-            old_ratio = priority_ratio(old_node)
+        while position < len(prioritized_nodes):
+            current_node = prioritized_nodes[position]
+            current_ratio = priority_ratio(current_node)
 
-            if new_ratio > old_ratio:
+            if node_ratio > current_ratio:
                 break
-            if new_ratio == old_ratio:
-                if new_risk > risk_reduction(old_node):
+            if node_ratio == current_ratio:
+                if node_risk > risk_reduction(current_node):
                     break
             position += 1
 
-        sorted_nodes.insert(position, node)
+        prioritized_nodes.insert(position, node)
 
-    return sorted_nodes
+    return prioritized_nodes
 
 
 def choose_small_group(nodes, budget):
-    """Choose nodes from a small group using the priority ratio."""
+    """Choose affordable nodes from a small group by priority."""
     selected = []
-    left = budget
-    sorted_nodes = sort_nodes(nodes)
+    remaining_budget = budget
+    prioritized_nodes = sort_nodes(nodes)
 
-    for node in sorted_nodes:
-        if node["cost"] <= left:
+    for node in prioritized_nodes:
+        if node["cost"] <= remaining_budget:
             selected.append(node["id"])
-            left -= node["cost"]
+            remaining_budget -= node["cost"]
 
     return selected
 
 
 def divide_and_conquer_patch(network, budget=120):
-    """Split the nodes into groups and solve each group recursively."""
+    """Split nodes into groups and choose patches recursively."""
     if budget < 0:
         raise ValueError("budget must be non-negative")
 
-    def solve(node_list, group_budget):
+    def select_from_group(node_list, group_budget):
         if len(node_list) == 0:
             return []
         if len(node_list) <= 4:
@@ -74,17 +74,14 @@ def divide_and_conquer_patch(network, budget=120):
         left_budget = min(group_budget, left_cost)
         right_budget = group_budget - left_budget
 
-        selected = solve(left_nodes, left_budget)
-        right_selected = solve(right_nodes, right_budget)
+        selected = select_from_group(left_nodes, left_budget)
+        right_selected = select_from_group(right_nodes, right_budget)
         for node_id in right_selected:
             selected.append(node_id)
 
-        # NOTE: left_budget + right_budget == group_budget, so the total
-        # cannot exceed group_budget — no trim loop needed.
-
         return selected
 
-    return solve(network["nodes"], budget)
+    return select_from_group(network["nodes"], budget)
 
 
 def greedy_patch(network, budget=120):
@@ -93,45 +90,45 @@ def greedy_patch(network, budget=120):
         raise ValueError("budget must be non-negative")
 
     selected = []
-    left = budget
-    sorted_nodes = sort_nodes(network["nodes"])
+    remaining_budget = budget
+    prioritized_nodes = sort_nodes(network["nodes"])
 
-    for node in sorted_nodes:
-        if node["cost"] <= left:
+    for node in prioritized_nodes:
+        if node["cost"] <= remaining_budget:
             selected.append(node["id"])
-            left -= node["cost"]
+            remaining_budget -= node["cost"]
 
     return selected
 
 
 def dynamic_programming_patch(network, budget=120):
-    """Use a simple 0-1 knapsack table to choose the best nodes."""
+    """Use a 0-1 knapsack table to maximize total risk reduction."""
     if budget < 0:
         raise ValueError("budget must be non-negative")
 
     node_list = network["nodes"]
     node_count = len(node_list)
-    table = [[0] * (budget + 1) for _ in range(node_count + 1)]
+    risk_table = [[0] * (budget + 1) for _ in range(node_count + 1)]
 
     for i in range(1, node_count + 1):
         node = node_list[i - 1]
         for j in range(budget + 1):
-            table[i][j] = table[i - 1][j]
+            risk_table[i][j] = risk_table[i - 1][j]
             if node["cost"] <= j:
-                old_value = table[i - 1][j - node["cost"]]
-                new_value = old_value + risk_reduction(node)
-                if new_value > table[i][j]:
-                    table[i][j] = new_value
+                previous_risk = risk_table[i - 1][j - node["cost"]]
+                candidate_risk = previous_risk + risk_reduction(node)
+                if candidate_risk > risk_table[i][j]:
+                    risk_table[i][j] = candidate_risk
 
     selected = []
-    left = budget
+    remaining_budget = budget
 
     i = node_count
     while i > 0:
-        if table[i][left] != table[i - 1][left]:
+        if risk_table[i][remaining_budget] != risk_table[i - 1][remaining_budget]:
             node = node_list[i - 1]
             selected.append(node["id"])
-            left -= node["cost"]
+            remaining_budget -= node["cost"]
         i -= 1
 
     selected.reverse()
@@ -139,13 +136,13 @@ def dynamic_programming_patch(network, budget=120):
 
 
 def selection_summary(network, selected_ids):
-    """Return the total cost and risk for selected node ids."""
-    by_id = {node["id"]: node for node in network["nodes"]}   # O(n) build
+    """Return the total patching cost and risk reduction for selected nodes."""
+    nodes_by_id = {node["id"]: node for node in network["nodes"]}
     total_cost = 0
     total_risk = 0
 
     for node_id in selected_ids:
-        node = by_id.get(node_id)
+        node = nodes_by_id.get(node_id)
         if node is None:
             continue
         total_cost += node["cost"]

@@ -25,6 +25,9 @@
     th, td { border-bottom: 1px solid #293544; padding: 8px 4px; text-align: right; }
     th:first-child, td:first-child { text-align: left; }
     .small { color: #aab8c7; font-size: .9rem; }
+    .network-key { color: #aab8c7; font-size: .82rem; margin-bottom: 8px; }
+    .network-controls { margin-bottom: 6px; }
+    .network-controls button { min-width: 34px; padding: 5px 8px; }
     .hidden { display: none; }
     .error { color: #ff8c8c; min-height: 22px; }
     .edge-row { margin: 6px 0; }
@@ -55,6 +58,9 @@
   <label>Number of edges
     <input id="edgeCount" type="number" min="0" value="8">
   </label>
+  <label>Patch budget
+    <input id="budget" type="number" min="0" value="120">
+  </label>
   <button id="makeNodesButton">Make Node Inputs</button>
   <div id="nodeInputs"></div>
   <h3>Edges</h3>
@@ -74,6 +80,12 @@
 <section id="dashboardScreen" class="hidden">
   <div class="two-column">
     <section>
+      <div class="network-key">Node labels: <strong>N</strong> = ID | <strong>C</strong> = patch cost | <strong>V</strong> = vulnerability</div>
+      <div class="network-controls">
+        <button data-zoom="out" type="button">-</button>
+        <button data-zoom="reset" type="button">Reset Zoom</button>
+        <button data-zoom="in" type="button">+</button>
+      </div>
       <canvas id="network" width="900" height="560"></canvas>
       <div class="small"><span class="dot healthy"></span>Healthy <span class="dot infected"></span>Infected <span class="dot patched"></span>Patched</div>
     </section>
@@ -99,19 +111,43 @@
 
 <section id="algorithmScreen" class="hidden">
   <h2 id="algorithmTitle">Algorithm Steps</h2>
-  <p id="algorithmStep">Press Next Step to begin.</p>
-  <p>Step <span id="algorithmNumber">0</span> of <span id="algorithmTotal">0</span></p>
-  <p>Remaining budget: <strong id="remainingBudget">120</strong></p>
-  <p>Selected nodes: <strong id="selectedNodes">None</strong></p>
-  <button id="nextStepButton">Next Step</button>
-  <button id="backDashboardButton">Back to Dashboard</button>
+  <div class="two-column">
+    <section>
+      <div class="network-key">Node labels: <strong>N</strong> = ID | <strong>C</strong> = patch cost | <strong>V</strong> = vulnerability</div>
+      <div class="network-controls">
+        <button data-zoom="out" type="button">-</button>
+        <button data-zoom="reset" type="button">Reset Zoom</button>
+        <button data-zoom="in" type="button">+</button>
+      </div>
+      <canvas id="algorithmNetwork" width="900" height="560"></canvas>
+      <div class="small"><span class="dot healthy"></span>Healthy <span class="dot infected"></span>Infected <span class="dot patched"></span>Patched</div>
+      <div class="metrics">
+        <div class="metric"><strong id="algorithmTime">0</strong>Time step</div>
+        <div class="metric"><strong id="algorithmInfected">1</strong>Infected</div>
+        <div class="metric"><strong id="algorithmCurve">2.0%</strong>Compromised</div>
+      </div>
+    </section>
+    <section>
+      <p id="algorithmStep">Press Next Step to begin.</p>
+      <p id="algorithmConcept" class="small"></p>
+      <p>Step <span id="algorithmNumber">0</span> of <span id="algorithmTotal">0</span></p>
+      <p>Remaining budget: <strong id="remainingBudget">120</strong></p>
+      <p>Selected nodes: <strong id="selectedNodes">None</strong></p>
+      <button id="previousStepButton">Previous Step</button>
+      <button id="nextStepButton">Next Step</button>
+      <button id="backDashboardButton">Back to Dashboard</button>
+    </section>
+  </div>
 </section>
   </main>
   <script>
     var canvas = document.getElementById("network");
     var ctx = canvas.getContext("2d");
+    var algorithmCanvas = document.getElementById("algorithmNetwork");
+    var algorithmCtx = algorithmCanvas.getContext("2d");
     var snapshot = { nodes: [], edges: [] };
     var positions = [];
+    var zoomLevel = 1;
     var customNodes = [];
     var customEdges = [];
     var editingEdge = -1;
@@ -126,59 +162,99 @@
 
 function makePositions(count) {
   positions = [];
+  var columns = Math.ceil(Math.sqrt(count));
+  var horizontalSpacing = count > 64 ? 82 : 100;
+  var verticalSpacing = 52;
+  var rows = Math.ceil(count / columns);
   for (var i = 0; i < count; i++) {
-    var angle = i * 2.39996;
-    var radius = 150 + (i % 7) * 24;
-    positions.push({x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: (i % 9 - 4) * 28});
+    var column = i % columns;
+    var row = Math.floor(i / columns);
+    positions.push({
+      x: (column - (columns - 1) / 2) * horizontalSpacing,
+      y: (row - (rows - 1) / 2) * verticalSpacing
+    });
   }
 }
 
-function project(point, rotation) {
-  var x = point.x * Math.cos(rotation) - point.z * Math.sin(rotation);
-  var z = point.x * Math.sin(rotation) + point.z * Math.cos(rotation);
-  return {x: canvas.width / 2 + x, y: canvas.height / 2 + point.y - z * .15, scale: 1 + z / 900};
+function setZoom(nextZoom) {
+  zoomLevel = Math.max(0.5, Math.min(2.5, nextZoom));
 }
 
-function draw(time) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  var rotation = time / 5000;
+function changeZoom(direction) {
+  if (direction === "in") {
+    setZoom(zoomLevel + 0.25);
+  } else if (direction === "out") {
+    setZoom(zoomLevel - 0.25);
+  } else {
+    setZoom(1);
+  }
+}
+
+function drawNetwork(targetCanvas, targetContext) {
+  targetContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
   var projected = [];
   for (var i = 0; i < positions.length; i++) {
-    projected.push(project(positions[i], rotation));
+    var point = positions[i];
+    projected.push({
+      x: targetCanvas.width / 2 + point.x * zoomLevel,
+      y: targetCanvas.height / 2 + point.y * zoomLevel
+    });
   }
-  ctx.strokeStyle = "rgba(130, 160, 190, .28)";
+  targetContext.strokeStyle = "rgba(130, 160, 190, .28)";
   for (var j = 0; j < snapshot.edges.length; j++) {
     var edge = snapshot.edges[j];
     var a = projected[edge[0]];
     var b = projected[edge[1]];
     if (!a || !b) continue;
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    targetContext.beginPath();
+    targetContext.moveTo(a.x, a.y);
+    targetContext.lineTo(b.x, b.y);
+    targetContext.stroke();
   }
   for (var k = 0; k < snapshot.nodes.length; k++) {
     var node = snapshot.nodes[k];
     var point = projected[node.id];
     if (!point) continue;
-    var radius = Math.max(3, 5 * point.scale);
-    ctx.fillStyle = node.state === "patched" ? "#4cdb79" : node.state === "infected" ? "#f04e4e" : "#ffffff";
-    ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2); ctx.fill();
+    var radius = Math.max(3, 6 * zoomLevel);
+    targetContext.fillStyle = node.state === "patched" ? "#4cdb79" : node.state === "infected" ? "#f04e4e" : "#ffffff";
+    targetContext.beginPath();
+    targetContext.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    targetContext.fill();
+    targetContext.fillStyle = "#dce8f5";
+    targetContext.font = "12px system-ui, sans-serif";
+    targetContext.textAlign = "left";
+    targetContext.textBaseline = "middle";
+    targetContext.fillText(
+      "N" + node.id + " C" + node.cost + " V" + node.vulnerability,
+      point.x + radius + 4,
+      point.y
+    );
   }
+}
+
+function draw(time) {
+  drawNetwork(canvas, ctx);
+  drawNetwork(algorithmCanvas, algorithmCtx);
   requestAnimationFrame(draw);
 }
 
 function update(data) {
   snapshot = data;
   makePositions(data.nodes.length);
-  document.getElementById("headerText").textContent = data.nodes.length + "-node " + data.mode + " network | budget B = 120";
+  document.getElementById("headerText").textContent = data.nodes.length + "-node " + data.mode + " network | budget B = " + data.budget;
   document.getElementById("step").textContent = data.time;
   document.getElementById("infected").textContent = data.infected;
   document.getElementById("curve").textContent = data.curve[data.curve.length - 1].toFixed(1) + "%";
+  document.getElementById("algorithmTime").textContent = data.time;
+  document.getElementById("algorithmInfected").textContent = data.infected;
+  document.getElementById("algorithmCurve").textContent = data.curve[data.curve.length - 1].toFixed(1) + "%";
   var resultBox = document.getElementById("results");
   resultBox.innerHTML = "";
   for (var i = 0; i < data.benchmarks.length; i++) {
     var result = data.benchmarks[i];
     var row = document.createElement("tr");
     row.innerHTML = "<td>" + result.name + "</td><td>" + result.time.toFixed(3) + " ms</td><td>" +
-      result.memory.toFixed(2) + " KB</td><td>" + result.budget + "/120</td><td>" + result.risk + "</td>";
+      result.memory.toFixed(2) + " KB</td><td>" + result.budget + "/" + data.budget + "</td><td>" + result.risk + "</td>";
     resultBox.appendChild(row);
   }
 }
@@ -283,6 +359,7 @@ function saveNetwork() {
   var data = {
     node_count: nodes.length,
     edge_count: parseInt(document.getElementById("edgeCount").value, 10),
+    budget: parseInt(document.getElementById("budget").value, 10),
     nodes: nodes,
     edges: customEdges
   };
@@ -318,7 +395,7 @@ function openAlgorithm(name) {
     return response.json();
   }).then(function(data) {
     showScreen("algorithmScreen");
-    showAlgorithmStep(data);
+    return updateAlgorithmPage(data);
   });
 }
 
@@ -326,18 +403,36 @@ function nextStep() {
   postJson("/api/algorithm/next", {}).then(function(response) {
     return response.json();
   }).then(function(data) {
-    showAlgorithmStep(data);
-    fetch("/api/state").then(function(response) { return response.json(); }).then(update);
+    return updateAlgorithmPage(data);
+  });
+}
+
+function previousStep() {
+  postJson("/api/algorithm/previous", {}).then(function(response) {
+    return response.json();
+  }).then(function(data) {
+    return updateAlgorithmPage(data);
+  });
+}
+
+function updateAlgorithmPage(algorithmData) {
+  return fetch("/api/state").then(function(response) {
+    return response.json();
+  }).then(function(stateData) {
+    update(stateData);
+    showAlgorithmStep(algorithmData);
   });
 }
 
 function showAlgorithmStep(data) {
   document.getElementById("algorithmTitle").textContent = data.title;
   document.getElementById("algorithmStep").textContent = data.step.text;
+  document.getElementById("algorithmConcept").textContent = data.step.explanation;
   document.getElementById("algorithmNumber").textContent = data.current;
   document.getElementById("algorithmTotal").textContent = data.total;
   document.getElementById("remainingBudget").textContent = data.step.remaining_budget;
   document.getElementById("selectedNodes").textContent = data.step.selected.length === 0 ? "None" : data.step.selected.join(", ");
+  document.getElementById("previousStepButton").disabled = !data.can_go_previous;
   document.getElementById("nextStepButton").disabled = data.finished;
   if (data.finished) {
     document.getElementById("nextStepButton").textContent = "Finished";
@@ -360,7 +455,22 @@ document.getElementById("edgeButton").onclick = addEdge;
 document.getElementById("saveNetworkButton").onclick = saveNetwork;
 document.getElementById("backToModeButton").onclick = function() { showScreen("modeScreen"); };
 document.getElementById("nextStepButton").onclick = nextStep;
+document.getElementById("previousStepButton").onclick = previousStep;
 document.getElementById("backDashboardButton").onclick = function() { showScreen("dashboardScreen"); };
+var zoomButtons = document.querySelectorAll("[data-zoom]");
+for (var i = 0; i < zoomButtons.length; i++) {
+  zoomButtons[i].onclick = function() {
+    changeZoom(this.getAttribute("data-zoom"));
+  };
+}
+canvas.onwheel = function(event) {
+  event.preventDefault();
+  changeZoom(event.deltaY < 0 ? "in" : "out");
+};
+algorithmCanvas.onwheel = function(event) {
+  event.preventDefault();
+  changeZoom(event.deltaY < 0 ? "in" : "out");
+};
 var buttons = document.querySelectorAll("[data-action]");
 for (var i = 0; i < buttons.length; i++) {
   buttons[i].onclick = function() { action(this.getAttribute("data-action")); };
